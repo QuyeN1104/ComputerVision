@@ -7,7 +7,7 @@ from ultralytics import YOLO
 # ================== CẤU HÌNH ==================
 MODEL     = "best.pt"          # segmentation model (*-seg.pt)
 SOURCE    = "test.mp4"         # "0" cho webcam
-OUT_MP4   = "couting.mp4"
+OUT_MP4   = "counting.mp4"
 OUT_CSV   = "best_pixels.csv"  # file CSV xuất ra cuối cùng
 CONF      = 0.25
 IOU       = 0.45
@@ -30,6 +30,7 @@ ZONES = [
 
 # ================== HÀM PHỤ TRỢ ==================
 def draw_label(img, x, y, text, fg=(255,255,255), bg=(0,80,180)):
+    """Vẽ label và khung cho vật thể"""
     font, scale, thick = cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2
     (tw, th), _ = cv2.getTextSize(text, font, scale, thick)
     pad = 5
@@ -40,92 +41,13 @@ def draw_label(img, x, y, text, fg=(255,255,255), bg=(0,80,180)):
 
 def draw_zones(img, zones, color=(0, 220, 255)):
     """Vẽ polygon và nhãn Zone với tránh chồng chéo chữ."""
-    H, W = img.shape[:2]
-    placed_rects = []  # danh sách bbox của nhãn đã đặt: (x1,y1,x2,y2)
-
-    def rect_overlap(a, b):
-        ax1, ay1, ax2, ay2 = a
-        bx1, by1, bx2, by2 = b
-        return not (ax2 < bx1 or bx2 < ax1 or ay2 < by1 or by2 < ay1)
-
-    def in_bounds(r):
-        x1, y1, x2, y2 = r
-        return (x1 >= 0 and y1 >= 0 and x2 < W and y2 < H)
-
-    font, scale, thick = cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2
-    pad = 6
-
-    for z in zones:
-        # Vẽ polygon
-        pts = np.array(z["points"], np.int32).reshape((-1,1,2))
-        cv2.polylines(img, [pts], True, color, 2)
-
-        # Tâm đa giác (centroid) để đặt nhãn
-        poly = pts.reshape(-1, 2)
-        cx, cy = poly.mean(axis=0).astype(int)
-
-        text = z["name"]
-        (tw, th), _ = cv2.getTextSize(text, font, scale, thick)
-
-        # Các vị trí thử lần lượt quanh tâm để tránh đè nhau
-        # (xoay vòng: trên, dưới, trái, phải, chéo…)
-        candidate_offsets = [
-            (0, -10),                       # ngay trên tâm
-            (0, th + 14),                   # ngay dưới tâm
-            (-(tw + 14), 0),                # trái tâm
-            (14, 0),                        # phải tâm
-            (-(tw + 14), -(th + 14)),       # trên-trái
-            (14, -(th + 14)),               # trên-phải
-            (-(tw + 14), th + 14),          # dưới-trái
-            (14, th + 14),                  # dưới-phải
-            (0, -2*th - 24),                # cao hơn
-            (0, 2*th + 24),                 # thấp hơn
-        ]
-
-        placed = False
-        for dx, dy in candidate_offsets:
-            x = int(cx + dx)
-            y = int(cy + dy)
-
-            # Tạo bbox nền của nhãn
-            x1 = x
-            y1 = max(0, y - th - 2*pad)
-            x2 = x + tw + 2*pad
-            y2 = y + 2  # một chút dưới baseline
-
-            rect = (x1, y1, x2, y2)
-
-            if not in_bounds(rect):
-                continue
-
-            # kiểm tra va chạm với nhãn đã đặt
-            if any(rect_overlap(rect, r2) for r2 in placed_rects):
-                continue
-
-            # Vẽ nền mờ + text
-            overlay = img.copy()
-            cv2.rectangle(overlay, (x1, y1), (x2, y2), (0, 80, 180), -1)
-            alpha = 0.35
-            img[:] = cv2.addWeighted(overlay, alpha, img, 1 - alpha, 0)
-
-            cv2.putText(img, text, (x + pad, y - pad),
-                        font, scale, (255,255,255), thick, cv2.LINE_AA)
-
-            placed_rects.append(rect)
-            placed = True
-            break
-
-        # Nếu không tìm được vị trí nào (rất hiếm), ráng vẽ ở trên tâm (có thể đè)
-        if not placed:
-            x = max(0, min(W - tw - 2*pad, cx - tw // 2))
-            y = max(th + 2*pad, cy - 10)
-            x1 = x; y1 = y - th - 2*pad; x2 = x + tw + 2*pad; y2 = y + 2
-            cv2.rectangle(img, (x1, y1), (x2, y2), (0, 80, 180), -1)
-            cv2.putText(img, text, (x + pad, y - pad),
-                        font, scale, (255,255,255), thick, cv2.LINE_AA)
-            placed_rects.append((x1,y1,x2,y2))
+    pts = np.array(zone_pts, np.int32).reshape((-1,1,2))
+    cv2.polylines(img, [pts], True, color, 2)
+    cv2.putText(img, "ZONE", (pts[0,0,0], max(0, pts[0,0,1]-8)),
+                cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2, cv2.LINE_AA)
 
 def centroid_of_box(x1, y1, x2, y2):
+    """Tìm trọng tâm của một vật thể"""
     return int((x1 + x2) / 2), int((y1 + y2) / 2)
 
 def which_zone(cx, cy, zones):
@@ -147,12 +69,10 @@ def mask_up_from_result(i, r, h, w):
         pts = np.array(seg, dtype=np.int32).reshape(-1,1,2)
         cv2.fillPoly(m, [pts], 1)
         return m
-    if getattr(r.masks, "data", None) is not None:
-        m_small = (r.masks.data[i].detach().cpu().numpy() > 0.5).astype(np.uint8)
-        return cv2.resize(m_small, (w, h), interpolation=cv2.INTER_NEAREST).astype(np.uint8)
     return None
 
 def overlay_mask_color(dst_bgr, mask01, color_bgr=(0, 0, 255), alpha=0.45):
+    """Vẽ mask lên hình"""
     if mask01 is None:
         return
     m = mask01.astype(bool)
